@@ -21,14 +21,9 @@ class TestSchema(unittest.TestCase):
             """
         ).fetchall()
 
-        self.assertEqual(
-            tables,
-            [
-                ("context_stream",),
-                ("core_contract",),
-                ("semantic_knowledge",),
-            ],
-        )
+        self.assertIn(("context_stream",), tables)
+        self.assertIn(("core_contract",), tables)
+        self.assertIn(("semantic_knowledge",), tables)
 
     def test_phase1_schema_has_extensible_columns(self):
         context_columns = {
@@ -48,6 +43,39 @@ class TestSchema(unittest.TestCase):
         self.assertEqual(context_columns["embedding"], "FLOAT[]")
         self.assertEqual(knowledge_columns["metadata"], "VARIANT")
         self.assertEqual(knowledge_columns["embedding"], "FLOAT[]")
+
+    def test_phase31_schema_is_initialized(self):
+        tables = self.manager.conn.execute(
+            """
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'main'
+            ORDER BY table_name
+            """
+        ).fetchall()
+
+        # Phase 3.1 adds candidate + audit tables (schema-first).
+        self.assertIn(("knowledge_candidate",), tables)
+        self.assertIn(("memory_audit_log",), tables)
+
+    def test_phase31_schema_columns(self):
+        candidate_columns = {
+            name: data_type
+            for _, name, data_type, _, _, _ in self.manager.conn.execute(
+                "PRAGMA table_info('knowledge_candidate')"
+            ).fetchall()
+        }
+        audit_columns = {
+            name: data_type
+            for _, name, data_type, _, _, _ in self.manager.conn.execute(
+                "PRAGMA table_info('memory_audit_log')"
+            ).fetchall()
+        }
+
+        self.assertEqual(candidate_columns["candidate_payload"], "VARIANT")
+        self.assertEqual(candidate_columns["status"], "VARCHAR")
+        self.assertEqual(audit_columns["decision_payload"], "VARIANT")
+        self.assertEqual(audit_columns["tool_payload"], "VARIANT")
 
 
 if __name__ == "__main__":
