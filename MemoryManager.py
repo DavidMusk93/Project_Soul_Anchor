@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 import os
 from typing import Any
 
@@ -50,6 +51,8 @@ class MemoryManager:
                 importance_score DOUBLE DEFAULT 0.5,
                 salience_score DOUBLE DEFAULT 0.5,
                 source_turn_id VARCHAR,
+                metadata VARIANT,
+                embedding FLOAT[],
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 expires_at TIMESTAMP,
                 is_archived BOOLEAN DEFAULT FALSE
@@ -71,6 +74,8 @@ class MemoryManager:
                 source_refs TEXT,
                 confidence_score DOUBLE DEFAULT 0.7,
                 stability_score DOUBLE DEFAULT 0.7,
+                metadata VARIANT,
+                embedding FLOAT[],
                 access_count BIGINT DEFAULT 0,
                 last_accessed_at TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -89,6 +94,12 @@ class MemoryManager:
 
     def _default_l1_ttl(self) -> datetime.timedelta:
         return datetime.timedelta(days=7)
+
+    def _variant_sql_literal(self, value: Any) -> str:
+        if value is None:
+            return "NULL"
+        payload = json.dumps(value, ensure_ascii=False).replace("'", "''")
+        return f"json('{payload}')::VARIANT"
 
     def _embed_text(self, text: str) -> list[float]:
         """
@@ -122,6 +133,8 @@ class MemoryManager:
         importance_score = float(event.get("importance_score", 0.5))
         salience_score = float(event.get("salience_score", 0.5))
         source_turn_id = event.get("source_turn_id")
+        metadata = event.get("metadata")
+        embedding = event.get("embedding")
 
         expires_at = event.get("expires_at")
         if expires_at is None:
@@ -130,12 +143,13 @@ class MemoryManager:
         is_archived = bool(event.get("is_archived", False))
 
         row = self.conn.execute(
-            """
+            f"""
             INSERT INTO context_stream (
                 session_id, user_id, topic, event_type, content, summary, tags,
-                importance_score, salience_score, source_turn_id, expires_at, is_archived
+                importance_score, salience_score, source_turn_id, metadata, embedding,
+                expires_at, is_archived
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {self._variant_sql_literal(metadata)}, ?, ?, ?)
             RETURNING id
             """,
             [
@@ -149,6 +163,7 @@ class MemoryManager:
                 importance_score,
                 salience_score,
                 source_turn_id,
+                embedding,
                 expires_at,
                 is_archived,
             ],
@@ -270,15 +285,17 @@ class MemoryManager:
         source_refs = knowledge.get("source_refs")
         confidence_score = float(knowledge.get("confidence_score", 0.7))
         stability_score = float(knowledge.get("stability_score", 0.7))
+        metadata = knowledge.get("metadata")
+        embedding = knowledge.get("embedding")
         is_active = bool(knowledge.get("is_active", True))
 
         row = self.conn.execute(
-            """
+            f"""
             INSERT INTO semantic_knowledge (
                 user_id, knowledge_type, title, canonical_text, keywords, source_refs,
-                confidence_score, stability_score, is_active
+                confidence_score, stability_score, metadata, embedding, is_active
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, {self._variant_sql_literal(metadata)}, ?, ?)
             RETURNING id
             """,
             [
@@ -290,6 +307,7 @@ class MemoryManager:
                 source_refs,
                 confidence_score,
                 stability_score,
+                embedding,
                 is_active,
             ],
         ).fetchone()

@@ -32,6 +32,25 @@ class TestMemoryManager(unittest.TestCase):
             ],
         )
 
+    def test_phase1_schema_has_extensible_columns(self):
+        context_columns = {
+            name: data_type
+            for _, name, data_type, _, _, _ in self.manager.conn.execute(
+                "PRAGMA table_info('context_stream')"
+            ).fetchall()
+        }
+        knowledge_columns = {
+            name: data_type
+            for _, name, data_type, _, _, _ in self.manager.conn.execute(
+                "PRAGMA table_info('semantic_knowledge')"
+            ).fetchall()
+        }
+
+        self.assertEqual(context_columns["metadata"], "VARIANT")
+        self.assertEqual(context_columns["embedding"], "FLOAT[]")
+        self.assertEqual(knowledge_columns["metadata"], "VARIANT")
+        self.assertEqual(knowledge_columns["embedding"], "FLOAT[]")
+
     def test_save_episode_persists_l1_record_with_default_ttl(self):
         record_id = self.manager.save_episode(
             {
@@ -69,6 +88,36 @@ class TestMemoryManager(unittest.TestCase):
                 True,
             ),
         )
+
+    def test_save_episode_persists_metadata_and_embedding(self):
+        record_id = self.manager.save_episode(
+            {
+                "session_id": "session-meta",
+                "user_id": "david",
+                "event_type": "tool_result",
+                "content": "DuckDB 1.5.1 支持 VARIANT。",
+                "metadata": {
+                    "tool_name": "schema_probe",
+                    "feature_flags": ["variant", "vector-ready"],
+                    "attempt": 1,
+                },
+                "embedding": [0.11, 0.22, 0.33],
+            }
+        )
+
+        row = self.manager.conn.execute(
+            """
+            SELECT metadata, embedding
+            FROM context_stream
+            WHERE id = ?
+            """,
+            [record_id],
+        ).fetchone()
+
+        self.assertEqual(row[0]["tool_name"], "schema_probe")
+        self.assertEqual(row[0]["attempt"], 1)
+        for actual, expected in zip(list(row[1]), [0.11, 0.22, 0.33]):
+            self.assertAlmostEqual(actual, expected, places=6)
 
     def test_search_recent_context_filters_expired_records(self):
         active_id = self.manager.save_episode(
@@ -151,6 +200,35 @@ class TestMemoryManager(unittest.TestCase):
             [best_id],
         ).fetchone()
         self.assertEqual(access_row, (1, True))
+
+    def test_save_knowledge_persists_metadata_and_embedding(self):
+        knowledge_id = self.manager.save_knowledge(
+            {
+                "user_id": "david",
+                "knowledge_type": "architecture",
+                "title": "DuckDB 1.5.x",
+                "canonical_text": "VARIANT and vector-ready columns should exist in the schema.",
+                "keywords": "duckdb,variant,embedding",
+                "metadata": {
+                    "source": "research",
+                    "capabilities": ["variant", "float-array"],
+                },
+                "embedding": [0.7, 0.8, 0.9],
+            }
+        )
+
+        row = self.manager.conn.execute(
+            """
+            SELECT metadata, embedding
+            FROM semantic_knowledge
+            WHERE id = ?
+            """,
+            [knowledge_id],
+        ).fetchone()
+
+        self.assertEqual(row[0]["source"], "research")
+        for actual, expected in zip(list(row[1]), [0.7, 0.8, 0.9]):
+            self.assertAlmostEqual(actual, expected, places=6)
 
     def test_build_context_packet_prioritizes_l3_then_l2_then_l1(self):
         self.manager.upsert_core_contract("identity", "Allen 是持续进化的协作智能体。", priority=100)
