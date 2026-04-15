@@ -7,6 +7,7 @@ from typing import Any
 from soul_anchor.agentic.decision_engine import MemoryDecision
 from soul_anchor.agentic.gating import MemoryGateResult, MemoryGating
 from soul_anchor.agentic.tools import MemoryToolAPI
+from soul_anchor.db.variant import variant_sql_literal
 from soul_anchor.manager import MemoryManager
 
 
@@ -29,7 +30,7 @@ class AuditRecorder:
             raise RuntimeError("MemoryManager is not connected. Call connect() first.")
 
     def _variant_literal(self, value: Any) -> str:
-        return self.manager._variant_sql_literal(value)  # noqa: SLF001
+        return variant_sql_literal(value)
 
     def record_decision(
         self,

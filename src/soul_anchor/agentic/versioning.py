@@ -4,6 +4,7 @@ import datetime
 from typing import Any
 
 from soul_anchor.manager import MemoryManager
+from soul_anchor.db.variant import variant_sql_literal
 
 
 class KnowledgeVersioning:
@@ -25,7 +26,7 @@ class KnowledgeVersioning:
         return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
 
     def _variant_literal(self, value: Any) -> str:
-        return self.manager._variant_sql_literal(value)  # noqa: SLF001
+        return variant_sql_literal(value)
 
     def _write_audit(self, *, action_type: str, user_id: str, tool_payload: dict[str, Any], result_summary: str):
         now = self._now_utc()
@@ -187,4 +188,3 @@ class KnowledgeVersioning:
             },
             result_summary="ok",
         )
-

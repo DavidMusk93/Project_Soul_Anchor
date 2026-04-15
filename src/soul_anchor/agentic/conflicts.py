@@ -4,6 +4,7 @@ import datetime
 from typing import Any, Literal
 
 from soul_anchor.manager import MemoryManager
+from soul_anchor.db.variant import variant_sql_literal
 
 ResolutionStrategy = Literal["keep_existing", "replace", "merge_text"]
 
@@ -29,7 +30,7 @@ class ConflictResolver:
         return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
 
     def _variant_literal(self, value: Any) -> str:
-        return self.manager._variant_sql_literal(value)  # noqa: SLF001
+        return variant_sql_literal(value)
 
     def _write_audit(self, *, user_id: str, tool_payload: dict[str, Any], result_summary: str) -> None:
         now = self._now_utc()
@@ -210,4 +211,3 @@ class ConflictResolver:
             """,
             [now, int(conflict_id)],
         )
-

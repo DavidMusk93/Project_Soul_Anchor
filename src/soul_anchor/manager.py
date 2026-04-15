@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import datetime
-import json
 import os
 from typing import Any
 
 import duckdb
 
 from soul_anchor.db import init_schema
+from soul_anchor.db.variant import variant_sql_literal
 from soul_anchor.retrieval import (
     build_context_packet as build_context_packet_impl,
     recall_memory as recall_memory_impl,
@@ -45,10 +45,7 @@ class MemoryManager:
         return datetime.timedelta(days=7)
 
     def _variant_sql_literal(self, value: Any) -> str:
-        if value is None:
-            return "NULL"
-        payload = json.dumps(value, ensure_ascii=False).replace("'", "''")
-        return f"json('{payload}')::VARIANT"
+        return variant_sql_literal(value)
 
     def _embed_text(self, text: str) -> list[float]:
         """

@@ -4,6 +4,7 @@ import datetime
 from typing import Any
 
 from soul_anchor.manager import MemoryManager
+from soul_anchor.db.variant import variant_sql_literal
 
 
 class MemoryToolAPI:
@@ -25,8 +26,7 @@ class MemoryToolAPI:
             raise RuntimeError("MemoryManager is not connected. Call connect() first.")
 
     def _variant_literal(self, value: Any) -> str:
-        # Reuse manager's encoding to keep VARIANT insertion consistent.
-        return self.manager._variant_sql_literal(value)  # noqa: SLF001
+        return variant_sql_literal(value)
 
     def _write_audit(
         self,
@@ -189,4 +189,3 @@ class MemoryToolAPI:
                 }
             )
         return results
-
