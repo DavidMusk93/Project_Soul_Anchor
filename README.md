@@ -53,7 +53,6 @@ If you want to use the internal index:
 - `src/soul_anchor/retrieval/`: ranking and context packet assembly
 - `src/soul_anchor/agentic/`: Phase 3.x agentic modules
 - `tests/`: unit tests (phase-based splits)
-- `MemoryManager.py`: legacy shim for `from MemoryManager import MemoryManager`
 
 ## Quick Start
 
@@ -314,3 +313,8 @@ DuckDB is excellent for local analytics and single-process workloads. For multi-
 - Failing tests: run `./.venv/bin/python -m unittest -v` and inspect the first failing module.
 - Linter: run `./.venv/bin/ruff check .`
 
+## Migration Notes
+
+- Legacy import `from MemoryManager import MemoryManager` is no longer supported.
+- Use `from soul_anchor.manager import MemoryManager` (preferred) or `from soul_anchor import MemoryManager`.
+- See `MIGRATION.md` for details.

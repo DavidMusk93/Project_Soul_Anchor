@@ -1242,7 +1242,7 @@ CREATE TABLE IF NOT EXISTS memory_audit_log (
 
 当前代码结构是：
 
-- `MemoryManager.py`（根目录兼容入口）
+- （已移除根目录 `MemoryManager.py` 兼容入口，统一使用 package import）
 - `pyproject.toml`
 - `src/soul_anchor/manager.py`
 - `src/soul_anchor/db/`
@@ -1257,7 +1257,7 @@ CREATE TABLE IF NOT EXISTS memory_audit_log (
 
 1. **职责混杂**：schema 初始化、存储写入、检索排序、上下文组装、未来的 agentic 决策都堆在同一个类中；
 2. **可测试性下降**：单元测试会越来越依赖一个“全能对象”，难以只测单一职责；
-3. **后续替换实现困难**：一旦要引入 FTS / VSS / 审计 / 门控，就会持续膨胀 `MemoryManager.py`；
+3. **后续替换实现困难**：一旦要引入 FTS / VSS / 审计 / 门控，就会持续膨胀单体入口（例如 `src/soul_anchor/manager.py`）；
 4. **模块边界不清**：上层调用者无法区分“仓储层能力”“决策层能力”“工具层能力”。
 
 因此，后续实现必须把“模块化设计”视为主任务，而不是代码整理项。
@@ -1339,7 +1339,7 @@ project_soul_anchor/
 
 不建议一次性重构全部代码，而建议按如下顺序演进：
 
-1. 先把 `MemoryManager.py` 拆分出 `db/store.py` 与 `repositories/`；
+1. 先把 `src/soul_anchor/manager.py` 继续拆分出 `db/` 与 `repositories/`；
 2. 再把 Phase 2 检索逻辑拆到 `retrieval/`；
 3. 随后把 `build_context_packet()` 收敛为 `context_builder.py`；
 4. 最后再引入 `agentic/decision_engine.py` 与 `agentic/gating.py`。
