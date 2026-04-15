@@ -4,6 +4,7 @@ from .candidates import CandidateProcessor
 from .conflicts import ConflictResolver
 from .gating import MemoryGating, MemoryGateResult
 from .tools import MemoryToolAPI
+from .versioning import KnowledgeVersioning
 
 __all__ = [
     "DecisionEngine",
@@ -13,6 +14,7 @@ __all__ = [
     "AuditVerifier",
     "CandidateProcessor",
     "ConflictResolver",
+    "KnowledgeVersioning",
     "MemoryGating",
     "MemoryGateResult",
     "MemoryToolAPI",
