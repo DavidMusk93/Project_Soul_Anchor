@@ -100,6 +100,30 @@ class TestSchema(unittest.TestCase):
         self.assertEqual(conflict_columns["details"], "VARIANT")
         self.assertEqual(conflict_columns["status"], "VARCHAR")
 
+    def test_phase33_schema_is_initialized(self):
+        tables = self.manager.conn.execute(
+            """
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'main'
+            ORDER BY table_name
+            """
+        ).fetchall()
+
+        self.assertIn(("knowledge_version_snapshot",), tables)
+
+    def test_phase33_schema_columns(self):
+        columns = {
+            name: data_type
+            for _, name, data_type, _, _, _ in self.manager.conn.execute(
+                "PRAGMA table_info('knowledge_version_snapshot')"
+            ).fetchall()
+        }
+
+        self.assertEqual(columns["knowledge_id"], "BIGINT")
+        self.assertEqual(columns["snapshot_payload"], "VARIANT")
+        self.assertEqual(columns["reason"], "VARCHAR")
+
 
 if __name__ == "__main__":
     unittest.main()

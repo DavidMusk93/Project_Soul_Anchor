@@ -114,3 +114,16 @@ def init_schema(conn: duckdb.DuckDBPyConnection) -> None:
         );
         """
     )
+
+    conn.execute(
+        """
+        CREATE SEQUENCE IF NOT EXISTS seq_knowledge_version_snapshot START 1;
+        CREATE TABLE IF NOT EXISTS knowledge_version_snapshot (
+            id BIGINT PRIMARY KEY DEFAULT nextval('seq_knowledge_version_snapshot'),
+            knowledge_id BIGINT NOT NULL,
+            snapshot_payload VARIANT,
+            reason VARCHAR,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
