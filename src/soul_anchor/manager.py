@@ -7,6 +7,15 @@ from typing import Any
 
 import duckdb
 
+from soul_anchor.db import init_schema
+from soul_anchor.retrieval import (
+    build_context_packet as build_context_packet_impl,
+    recall_memory as recall_memory_impl,
+    search_knowledge as search_knowledge_impl,
+    search_recent_context as search_recent_context_impl,
+    search_recent_context_advanced as search_recent_context_advanced_impl,
+)
+
 class MemoryManager:
     """
     Soul Anchor 记忆系统核心基石 (Phase 1)
@@ -23,67 +32,7 @@ class MemoryManager:
         self._init_schema()
 
     def _init_schema(self):
-        # L3 Core Persona / Core Contract (key-value, highest priority constraints)
-        self.conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS core_contract (
-                contract_key VARCHAR PRIMARY KEY,
-                contract_value TEXT NOT NULL,
-                priority INTEGER NOT NULL DEFAULT 100,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-            """
-        )
-
-        # L1 Episodic Memory (short-lived event stream)
-        self.conn.execute(
-            """
-            CREATE SEQUENCE IF NOT EXISTS seq_context_stream START 1;
-            CREATE TABLE IF NOT EXISTS context_stream (
-                id BIGINT PRIMARY KEY DEFAULT nextval('seq_context_stream'),
-                session_id VARCHAR NOT NULL,
-                user_id VARCHAR NOT NULL,
-                topic VARCHAR,
-                event_type VARCHAR NOT NULL,
-                content TEXT NOT NULL,
-                summary TEXT,
-                tags TEXT,
-                importance_score DOUBLE DEFAULT 0.5,
-                salience_score DOUBLE DEFAULT 0.5,
-                source_turn_id VARCHAR,
-                metadata VARIANT,
-                embedding FLOAT[],
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                expires_at TIMESTAMP,
-                is_archived BOOLEAN DEFAULT FALSE
-            );
-            """
-        )
-
-        # L2 Semantic Memory (stable knowledge distilled from events)
-        self.conn.execute(
-            """
-            CREATE SEQUENCE IF NOT EXISTS seq_semantic_knowledge START 1;
-            CREATE TABLE IF NOT EXISTS semantic_knowledge (
-                id BIGINT PRIMARY KEY DEFAULT nextval('seq_semantic_knowledge'),
-                user_id VARCHAR NOT NULL,
-                knowledge_type VARCHAR NOT NULL,
-                title VARCHAR NOT NULL,
-                canonical_text TEXT NOT NULL,
-                keywords TEXT,
-                source_refs TEXT,
-                confidence_score DOUBLE DEFAULT 0.7,
-                stability_score DOUBLE DEFAULT 0.7,
-                metadata VARIANT,
-                embedding FLOAT[],
-                access_count BIGINT DEFAULT 0,
-                last_accessed_at TIMESTAMP,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                is_active BOOLEAN DEFAULT TRUE
-            );
-            """
-        )
+        init_schema(self.conn)
 
     def _ensure_connected(self) -> None:
         if self.conn is None:
@@ -100,16 +49,6 @@ class MemoryManager:
             return "NULL"
         payload = json.dumps(value, ensure_ascii=False).replace("'", "''")
         return f"json('{payload}')::VARIANT"
-
-    def _tokenize(self, text: str) -> list[str]:
-        # MVP tokenizer: whitespace split. Phase 2 can be upgraded to FTS/VSS later.
-        return [t.strip().lower() for t in text.split() if t.strip()]
-
-    def _contains_any(self, text: str | None, terms: list[str]) -> bool:
-        if not text:
-            return False
-        hay = text.lower()
-        return any(term in hay for term in terms)
 
     def _embed_text(self, text: str) -> list[float]:
         """
@@ -194,93 +133,14 @@ class MemoryManager:
         Filters expired/archived items.
         """
         self._ensure_connected()
-        now = self._now_utc()
-
-        terms = [t.strip() for t in query.split() if t.strip()]
-        if not terms:
-            terms = [query]
-
-        rows = self.conn.execute(
-            """
-            SELECT
-                id, session_id, user_id, topic, event_type, content, summary, tags,
-                importance_score, salience_score, created_at, expires_at
-            FROM context_stream
-            WHERE session_id = ?
-              AND user_id = ?
-              AND is_archived = FALSE
-              AND (expires_at IS NULL OR expires_at > ?)
-            """,
-            [session_id, user_id, now],
-        ).fetchall()
-
-        def _contains(text: str | None, term: str) -> bool:
-            if not text:
-                return False
-            return term.lower() in text.lower()
-
-        scored: list[tuple[int, int, float, datetime.datetime | None, tuple[Any, ...]]] = []
-        for row in rows:
-            (
-                row_id,
-                r_session_id,
-                r_user_id,
-                topic,
-                event_type,
-                content,
-                summary,
-                tags,
-                importance_score,
-                salience_score,
-                created_at,
-                expires_at,
-            ) = row
-            score = 0
-            for term in terms:
-                if _contains(content, term):
-                    score += 3
-                if _contains(summary, term):
-                    score += 2
-                if _contains(tags, term):
-                    score += 1
-            if score > 0:
-                scored.append((1, score, float(salience_score), created_at, row))
-
-        scored.sort(key=lambda x: (x[0], x[1], x[2], x[3] or datetime.datetime.min), reverse=True)
-        selected_rows = [x[4] for x in scored[: int(top_k)]]
-
-        results: list[dict[str, Any]] = []
-        for (
-            row_id,
-            r_session_id,
-            r_user_id,
-            topic,
-            event_type,
-            content,
-            summary,
-            tags,
-            importance_score,
-            salience_score,
-            created_at,
-            expires_at,
-        ) in selected_rows:
-            results.append(
-                {
-                    "id": int(row_id),
-                    "session_id": r_session_id,
-                    "user_id": r_user_id,
-                    "topic": topic,
-                    "event_type": event_type,
-                    "content": content,
-                    "summary": summary,
-                    "tags": tags,
-                    "importance_score": float(importance_score),
-                    "salience_score": float(salience_score),
-                    "created_at": created_at,
-                    "expires_at": expires_at,
-                }
-            )
-        return results
+        return search_recent_context_impl(
+            self.conn,
+            session_id=session_id,
+            user_id=user_id,
+            query=query,
+            top_k=top_k,
+            now=self._now_utc(),
+        )
 
     def search_recent_context_advanced(
         self,
@@ -294,84 +154,14 @@ class MemoryManager:
         Phase 2: Recency-first ranking with salience tie-breaker.
         """
         self._ensure_connected()
-        now = self._now_utc()
-
-        terms = self._tokenize(query) or [query.lower()]
-        rows = self.conn.execute(
-            """
-            SELECT
-                id, session_id, user_id, topic, event_type, content, summary, tags,
-                importance_score, salience_score, created_at, expires_at
-            FROM context_stream
-            WHERE session_id = ?
-              AND user_id = ?
-              AND is_archived = FALSE
-              AND (expires_at IS NULL OR expires_at > ?)
-            """,
-            [session_id, user_id, now],
-        ).fetchall()
-
-        matched = []
-        for row in rows:
-            (
-                row_id,
-                r_session_id,
-                r_user_id,
-                topic,
-                event_type,
-                content,
-                summary,
-                tags,
-                importance_score,
-                salience_score,
-                created_at,
-                expires_at,
-            ) = row
-            if self._contains_any(content, terms) or self._contains_any(summary, terms) or self._contains_any(
-                tags, terms
-            ):
-                matched.append(row)
-
-        matched.sort(
-            key=lambda r: (
-                r[10] or datetime.datetime.min,  # created_at
-                float(r[9]),  # salience_score
-            ),
-            reverse=True,
+        return search_recent_context_advanced_impl(
+            self.conn,
+            session_id=session_id,
+            user_id=user_id,
+            query=query,
+            top_k=top_k,
+            now=self._now_utc(),
         )
-
-        results: list[dict[str, Any]] = []
-        for (
-            row_id,
-            r_session_id,
-            r_user_id,
-            topic,
-            event_type,
-            content,
-            summary,
-            tags,
-            importance_score,
-            salience_score,
-            created_at,
-            expires_at,
-        ) in matched[: int(top_k)]:
-            results.append(
-                {
-                    "id": int(row_id),
-                    "session_id": r_session_id,
-                    "user_id": r_user_id,
-                    "topic": topic,
-                    "event_type": event_type,
-                    "content": content,
-                    "summary": summary,
-                    "tags": tags,
-                    "importance_score": float(importance_score),
-                    "salience_score": float(salience_score),
-                    "created_at": created_at,
-                    "expires_at": expires_at,
-                }
-            )
-        return results
 
     def save_knowledge(self, knowledge: dict[str, Any]) -> int:
         """Insert a L2 semantic knowledge record. Returns inserted id."""
@@ -421,72 +211,14 @@ class MemoryManager:
         Uses keyword matching; in Phase 2 this should be FTS/hybrid retrieval.
         """
         self._ensure_connected()
-        _ = self._embed_text(query)
-        terms = [t.strip() for t in query.split() if t.strip()]
-        if not terms:
-            terms = [query]
-
-        rows = self.conn.execute(
-            """
-            SELECT
-                id, title, canonical_text, keywords, confidence_score, stability_score
-            FROM semantic_knowledge
-            WHERE is_active = TRUE
-              AND user_id = ?
-            """,
-            [user_id],
-        ).fetchall()
-
-        def _score(text: str | None, term: str) -> bool:
-            if not text:
-                return False
-            return term.lower() in text.lower()
-
-        scored: list[tuple[int, int, float, float, tuple[Any, ...]]] = []
-        for row in rows:
-            row_id, title, canonical_text, keywords, confidence_score, stability_score = row
-            score = 0
-            for term in terms:
-                if _score(title, term):
-                    score += 3
-                if _score(keywords, term):
-                    score += 2
-                if _score(canonical_text, term):
-                    score += 1
-            scored.append((1 if score > 0 else 0, score, float(stability_score), float(confidence_score), row))
-
-        # Matches first (has_match), then score, then stability/confidence.
-        scored.sort(key=lambda x: (x[0], x[1], x[2], x[3]), reverse=True)
-        selected_rows = [x[4] for x in scored[: int(top_k)]]
-
-        now = self._now_utc()
-        ids = [int(r[0]) for r in selected_rows]
-        if ids:
-            self.conn.execute(
-                """
-                UPDATE semantic_knowledge
-                SET access_count = access_count + 1,
-                    last_accessed_at = ?,
-                    updated_at = ?
-                WHERE id IN (SELECT unnest(?::BIGINT[]))
-                """,
-                [now, now, ids],
-            )
-
-        results: list[dict[str, Any]] = []
-        for row_id, title, canonical_text, keywords, confidence_score, stability_score in selected_rows:
-            results.append(
-                {
-                    "id": int(row_id),
-                    "title": title,
-                    "content": canonical_text,
-                    "canonical_text": canonical_text,
-                    "keywords": keywords,
-                    "confidence_score": float(confidence_score),
-                    "stability_score": float(stability_score),
-                }
-            )
-        return results
+        return recall_memory_impl(
+            self.conn,
+            query=query,
+            user_id=user_id,
+            top_k=top_k,
+            now=self._now_utc(),
+            embed_text=self._embed_text,
+        )
 
     def search_knowledge(
         self,
@@ -503,83 +235,14 @@ class MemoryManager:
         - FTS/hybrid retrieval can replace the scoring internals later without changing the API.
         """
         self._ensure_connected()
-        _ = self._embed_text(query)
-
-        terms = self._tokenize(query) or [query.lower()]
-        rows = self.conn.execute(
-            """
-            SELECT
-                id, title, canonical_text, keywords, confidence_score, stability_score
-            FROM semantic_knowledge
-            WHERE is_active = TRUE
-              AND user_id = ?
-            """,
-            [user_id],
-        ).fetchall()
-
-        def _hit(text: str | None, term: str) -> bool:
-            if not text:
-                return False
-            return term in text.lower()
-
-        scored: list[tuple[float, float, float, tuple[Any, ...], dict[str, bool]]] = []
-        for row in rows:
-            row_id, title, canonical_text, keywords, confidence_score, stability_score = row
-            title_hit = any(_hit(title, t) for t in terms)
-            keywords_hit = any(_hit(keywords, t) for t in terms)
-            text_hit = any(_hit(canonical_text, t) for t in terms)
-
-            relevance = 0.0
-            relevance += 3.0 if title_hit else 0.0
-            relevance += 2.0 if keywords_hit else 0.0
-            relevance += 1.0 if text_hit else 0.0
-
-            # Relevance dominates; stability breaks ties.
-            retrieval_score = relevance * 1000.0 + float(stability_score) * 10.0 + float(confidence_score)
-            scored.append(
-                (
-                    retrieval_score,
-                    relevance,
-                    float(stability_score),
-                    row,
-                    {"title": title_hit, "keywords": keywords_hit, "canonical_text": text_hit},
-                )
-            )
-
-        scored.sort(key=lambda x: x[0], reverse=True)
-        selected = scored[: int(top_k)]
-
-        now = self._now_utc()
-        ids = [int(item[3][0]) for item in selected]
-        if ids:
-            self.conn.execute(
-                """
-                UPDATE semantic_knowledge
-                SET access_count = access_count + 1,
-                    last_accessed_at = ?,
-                    updated_at = ?
-                WHERE id IN (SELECT unnest(?::BIGINT[]))
-                """,
-                [now, now, ids],
-            )
-
-        results: list[dict[str, Any]] = []
-        for retrieval_score, _, _, row, reasons in selected:
-            row_id, title, canonical_text, keywords, confidence_score, stability_score = row
-            results.append(
-                {
-                    "id": int(row_id),
-                    "title": title,
-                    "content": canonical_text,
-                    "canonical_text": canonical_text,
-                    "keywords": keywords,
-                    "confidence_score": float(confidence_score),
-                    "stability_score": float(stability_score),
-                    "retrieval_score": float(retrieval_score),
-                    "match_reasons": reasons,
-                }
-            )
-        return results
+        return search_knowledge_impl(
+            self.conn,
+            query=query,
+            user_id=user_id,
+            top_k=top_k,
+            now=self._now_utc(),
+            embed_text=self._embed_text,
+        )
 
     def upsert_core_contract(self, contract_key: str, contract_value: str, *, priority: int = 100) -> None:
         """Insert or update a L3 contract item."""
@@ -633,48 +296,18 @@ class MemoryManager:
         Assemble a structured context packet (L3 -> L2 -> L1).
         Phase 2: keeps Phase 1 behavior but adds optional budget and deduplication hooks.
         """
-        core_contract = self.load_core_contract()
-        semantic_knowledge = self.search_knowledge(query=query, user_id=user_id, top_k=l2_limit)
-        recent_context = self.search_recent_context_advanced(
-            session_id=session_id, user_id=user_id, query=query, top_k=l1_limit
+        return build_context_packet_impl(
+            session_id=session_id,
+            user_id=user_id,
+            query=query,
+            l1_limit=l1_limit,
+            l2_limit=l2_limit,
+            max_chars=max_chars,
+            deduplicate=deduplicate,
+            load_core_contract=self.load_core_contract,
+            search_knowledge=self.search_knowledge,
+            search_recent_context_advanced=self.search_recent_context_advanced,
         )
-
-        if deduplicate and semantic_knowledge and recent_context:
-            l2_texts = [str(item.get("canonical_text") or item.get("content") or "") for item in semantic_knowledge]
-            l2_norm = [t.strip().lower() for t in l2_texts if t]
-            filtered_l1 = []
-            for item in recent_context:
-                c = str(item.get("content") or "").strip().lower()
-                if not c:
-                    continue
-                if any(c in t or t in c for t in l2_norm):
-                    continue
-                filtered_l1.append(item)
-            recent_context = filtered_l1
-
-        def _packet_chars() -> int:
-            total = 0
-            for item in core_contract:
-                total += len(str(item.get("contract_value") or ""))
-            for item in semantic_knowledge:
-                total += len(str(item.get("canonical_text") or item.get("content") or ""))
-            for item in recent_context:
-                total += len(str(item.get("content") or ""))
-            return total
-
-        if max_chars is not None:
-            # Budget trimming: preserve L3, then keep L2, then keep L1 until within budget.
-            while _packet_chars() > int(max_chars) and recent_context:
-                recent_context.pop()
-            while _packet_chars() > int(max_chars) and semantic_knowledge:
-                semantic_knowledge.pop()
-
-        return {
-            "core_contract": core_contract,
-            "semantic_knowledge": semantic_knowledge,
-            "recent_context": recent_context,
-            "metadata": {"total_chars": _packet_chars()},
-        }
 
     def close(self):
         if self.conn:
