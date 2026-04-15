@@ -101,6 +101,16 @@ class MemoryManager:
         payload = json.dumps(value, ensure_ascii=False).replace("'", "''")
         return f"json('{payload}')::VARIANT"
 
+    def _tokenize(self, text: str) -> list[str]:
+        # MVP tokenizer: whitespace split. Phase 2 can be upgraded to FTS/VSS later.
+        return [t.strip().lower() for t in text.split() if t.strip()]
+
+    def _contains_any(self, text: str | None, terms: list[str]) -> bool:
+        if not text:
+            return False
+        hay = text.lower()
+        return any(term in hay for term in terms)
+
     def _embed_text(self, text: str) -> list[float]:
         """
         Phase 1 placeholder.
@@ -272,6 +282,97 @@ class MemoryManager:
             )
         return results
 
+    def search_recent_context_advanced(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+        query: str,
+        top_k: int = 10,
+    ) -> list[dict[str, Any]]:
+        """
+        Phase 2: Recency-first ranking with salience tie-breaker.
+        """
+        self._ensure_connected()
+        now = self._now_utc()
+
+        terms = self._tokenize(query) or [query.lower()]
+        rows = self.conn.execute(
+            """
+            SELECT
+                id, session_id, user_id, topic, event_type, content, summary, tags,
+                importance_score, salience_score, created_at, expires_at
+            FROM context_stream
+            WHERE session_id = ?
+              AND user_id = ?
+              AND is_archived = FALSE
+              AND (expires_at IS NULL OR expires_at > ?)
+            """,
+            [session_id, user_id, now],
+        ).fetchall()
+
+        matched = []
+        for row in rows:
+            (
+                row_id,
+                r_session_id,
+                r_user_id,
+                topic,
+                event_type,
+                content,
+                summary,
+                tags,
+                importance_score,
+                salience_score,
+                created_at,
+                expires_at,
+            ) = row
+            if self._contains_any(content, terms) or self._contains_any(summary, terms) or self._contains_any(
+                tags, terms
+            ):
+                matched.append(row)
+
+        matched.sort(
+            key=lambda r: (
+                r[10] or datetime.datetime.min,  # created_at
+                float(r[9]),  # salience_score
+            ),
+            reverse=True,
+        )
+
+        results: list[dict[str, Any]] = []
+        for (
+            row_id,
+            r_session_id,
+            r_user_id,
+            topic,
+            event_type,
+            content,
+            summary,
+            tags,
+            importance_score,
+            salience_score,
+            created_at,
+            expires_at,
+        ) in matched[: int(top_k)]:
+            results.append(
+                {
+                    "id": int(row_id),
+                    "session_id": r_session_id,
+                    "user_id": r_user_id,
+                    "topic": topic,
+                    "event_type": event_type,
+                    "content": content,
+                    "summary": summary,
+                    "tags": tags,
+                    "importance_score": float(importance_score),
+                    "salience_score": float(salience_score),
+                    "created_at": created_at,
+                    "expires_at": expires_at,
+                }
+            )
+        return results
+
     def save_knowledge(self, knowledge: dict[str, Any]) -> int:
         """Insert a L2 semantic knowledge record. Returns inserted id."""
         self._ensure_connected()
@@ -387,6 +488,99 @@ class MemoryManager:
             )
         return results
 
+    def search_knowledge(
+        self,
+        *,
+        query: str,
+        user_id: str,
+        top_k: int = 10,
+    ) -> list[dict[str, Any]]:
+        """
+        Phase 2: Search semantic_knowledge with relevance-first ranking and explanations.
+
+        Notes:
+        - This is still a lightweight keyword-based implementation.
+        - FTS/hybrid retrieval can replace the scoring internals later without changing the API.
+        """
+        self._ensure_connected()
+        _ = self._embed_text(query)
+
+        terms = self._tokenize(query) or [query.lower()]
+        rows = self.conn.execute(
+            """
+            SELECT
+                id, title, canonical_text, keywords, confidence_score, stability_score
+            FROM semantic_knowledge
+            WHERE is_active = TRUE
+              AND user_id = ?
+            """,
+            [user_id],
+        ).fetchall()
+
+        def _hit(text: str | None, term: str) -> bool:
+            if not text:
+                return False
+            return term in text.lower()
+
+        scored: list[tuple[float, float, float, tuple[Any, ...], dict[str, bool]]] = []
+        for row in rows:
+            row_id, title, canonical_text, keywords, confidence_score, stability_score = row
+            title_hit = any(_hit(title, t) for t in terms)
+            keywords_hit = any(_hit(keywords, t) for t in terms)
+            text_hit = any(_hit(canonical_text, t) for t in terms)
+
+            relevance = 0.0
+            relevance += 3.0 if title_hit else 0.0
+            relevance += 2.0 if keywords_hit else 0.0
+            relevance += 1.0 if text_hit else 0.0
+
+            # Relevance dominates; stability breaks ties.
+            retrieval_score = relevance * 1000.0 + float(stability_score) * 10.0 + float(confidence_score)
+            scored.append(
+                (
+                    retrieval_score,
+                    relevance,
+                    float(stability_score),
+                    row,
+                    {"title": title_hit, "keywords": keywords_hit, "canonical_text": text_hit},
+                )
+            )
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        selected = scored[: int(top_k)]
+
+        now = self._now_utc()
+        ids = [int(item[3][0]) for item in selected]
+        if ids:
+            self.conn.execute(
+                """
+                UPDATE semantic_knowledge
+                SET access_count = access_count + 1,
+                    last_accessed_at = ?,
+                    updated_at = ?
+                WHERE id IN (SELECT unnest(?::BIGINT[]))
+                """,
+                [now, now, ids],
+            )
+
+        results: list[dict[str, Any]] = []
+        for retrieval_score, _, _, row, reasons in selected:
+            row_id, title, canonical_text, keywords, confidence_score, stability_score = row
+            results.append(
+                {
+                    "id": int(row_id),
+                    "title": title,
+                    "content": canonical_text,
+                    "canonical_text": canonical_text,
+                    "keywords": keywords,
+                    "confidence_score": float(confidence_score),
+                    "stability_score": float(stability_score),
+                    "retrieval_score": float(retrieval_score),
+                    "match_reasons": reasons,
+                }
+            )
+        return results
+
     def upsert_core_contract(self, contract_key: str, contract_value: str, *, priority: int = 100) -> None:
         """Insert or update a L3 contract item."""
         self._ensure_connected()
@@ -432,21 +626,54 @@ class MemoryManager:
         query: str,
         l1_limit: int = 10,
         l2_limit: int = 10,
+        max_chars: int | None = None,
+        deduplicate: bool = False,
     ) -> dict[str, Any]:
         """
         Assemble a structured context packet (L3 -> L2 -> L1).
-        Phase 1: pure DB reads + light ranking.
+        Phase 2: keeps Phase 1 behavior but adds optional budget and deduplication hooks.
         """
         core_contract = self.load_core_contract()
-        semantic_knowledge = self.recall_memory(query=query, user_id=user_id, top_k=l2_limit)
-        recent_context = self.search_recent_context(
+        semantic_knowledge = self.search_knowledge(query=query, user_id=user_id, top_k=l2_limit)
+        recent_context = self.search_recent_context_advanced(
             session_id=session_id, user_id=user_id, query=query, top_k=l1_limit
         )
+
+        if deduplicate and semantic_knowledge and recent_context:
+            l2_texts = [str(item.get("canonical_text") or item.get("content") or "") for item in semantic_knowledge]
+            l2_norm = [t.strip().lower() for t in l2_texts if t]
+            filtered_l1 = []
+            for item in recent_context:
+                c = str(item.get("content") or "").strip().lower()
+                if not c:
+                    continue
+                if any(c in t or t in c for t in l2_norm):
+                    continue
+                filtered_l1.append(item)
+            recent_context = filtered_l1
+
+        def _packet_chars() -> int:
+            total = 0
+            for item in core_contract:
+                total += len(str(item.get("contract_value") or ""))
+            for item in semantic_knowledge:
+                total += len(str(item.get("canonical_text") or item.get("content") or ""))
+            for item in recent_context:
+                total += len(str(item.get("content") or ""))
+            return total
+
+        if max_chars is not None:
+            # Budget trimming: preserve L3, then keep L2, then keep L1 until within budget.
+            while _packet_chars() > int(max_chars) and recent_context:
+                recent_context.pop()
+            while _packet_chars() > int(max_chars) and semantic_knowledge:
+                semantic_knowledge.pop()
 
         return {
             "core_contract": core_contract,
             "semantic_knowledge": semantic_knowledge,
             "recent_context": recent_context,
+            "metadata": {"total_chars": _packet_chars()},
         }
 
     def close(self):
@@ -455,7 +682,7 @@ class MemoryManager:
 
 if __name__ == "__main__":
     db_file = "aime_evolution.duckdb"
-    print(f"=== 初始化 Project Soul Anchor 基础架构 ===")
+    print("=== 初始化 Project Soul Anchor 基础架构 ===")
     print(f"目标数据库: {os.path.abspath(db_file)}")
     
     manager = MemoryManager(db_file)

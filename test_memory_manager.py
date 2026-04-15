@@ -278,7 +278,6 @@ class TestPhase2RetrievalSpecs(unittest.TestCase):
     def tearDown(self):
         self.manager.close()
 
-    @unittest.expectedFailure
     def test_phase2_search_knowledge_prefers_relevance_then_stability(self):
         self.manager.save_knowledge(
             {
@@ -312,7 +311,6 @@ class TestPhase2RetrievalSpecs(unittest.TestCase):
         self.assertEqual(results[0]["title"], "DuckDB 检索架构")
         self.assertGreaterEqual(results[0]["retrieval_score"], results[1]["retrieval_score"])
 
-    @unittest.expectedFailure
     def test_phase2_search_knowledge_returns_match_explanations(self):
         self.manager.save_knowledge(
             {
@@ -332,10 +330,9 @@ class TestPhase2RetrievalSpecs(unittest.TestCase):
         )[0]
 
         self.assertIn("match_reasons", result)
-        self.assertIn("title", result["match_reasons"])
-        self.assertIn("keywords", result["match_reasons"])
+        self.assertTrue(result["match_reasons"]["title"])
+        self.assertTrue(result["match_reasons"]["keywords"])
 
-    @unittest.expectedFailure
     def test_phase2_search_recent_context_applies_recency_and_salience_weights(self):
         older_id = self.manager.save_episode(
             {
@@ -377,7 +374,6 @@ class TestPhase2RetrievalSpecs(unittest.TestCase):
 
         self.assertEqual([item["id"] for item in results], [newer_id, older_id])
 
-    @unittest.expectedFailure
     def test_phase2_build_context_packet_respects_budget_and_deduplicates(self):
         self.manager.upsert_core_contract("memory_principle", "L3 永远优先。", priority=900)
         self.manager.save_knowledge(
