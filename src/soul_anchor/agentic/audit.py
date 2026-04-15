@@ -127,6 +127,7 @@ class AgenticLoopRunner:
         )
 
         executed_actions: list[str] = []
+        episode_id: int | None = None
 
         # Gate + write L1 episode if allowed.
         if decision.should_write_episode:
@@ -139,7 +140,7 @@ class AgenticLoopRunner:
                 }
             )
             if gate_result.accepted:
-                _ = self.tools.save_episode(
+                episode_id = self.tools.save_episode(
                     {
                         "session_id": session_id,
                         "user_id": user_id,
@@ -167,8 +168,26 @@ class AgenticLoopRunner:
             )
             executed_actions.append("search_knowledge")
 
-        # Candidate creation is intentionally not executed here yet (needs explicit extraction step),
-        # but the verifier supports it for future extension.
+        # Candidate creation (Phase 3.1): extract a conservative candidate from the user's message.
+        if decision.should_create_knowledge_candidate:
+            candidate = {
+                "user_id": user_id,
+                "knowledge_type": "preference",
+                "title": "User Preference",
+                "canonical_text": content,
+                "source_refs": f"context_stream:{episode_id}" if episode_id is not None else None,
+                "candidate_payload": {
+                    "reasons": decision.reasons,
+                    "event_type": event_type,
+                    "content": content,
+                },
+                "confidence_score": 0.6,
+                "status": "pending",
+            }
+            gate_result = self.gating.gate_knowledge_candidate(candidate)
+            if gate_result.accepted:
+                _ = self.tools.save_knowledge_candidate(candidate)
+                executed_actions.append("save_knowledge_candidate")
 
         self.audit_verifier.assert_consistent(decision=decision, executed_actions=executed_actions)
 
@@ -177,4 +196,3 @@ class AgenticLoopRunner:
             "executed_actions": executed_actions,
             "audit_ids": audit_ids,
         }
-

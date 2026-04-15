@@ -124,7 +124,30 @@ class TestAgenticAudit(unittest.TestCase):
         self.assertGreaterEqual(len(self._audit_rows("search_context")), 1)
         self.assertGreaterEqual(len(self._audit_rows("search_knowledge")), 1)
 
+    def test_closed_loop_creates_candidate_and_writes_audit(self):
+        loop_result = self.runner.run_event(
+            session_id="s4",
+            user_id="u4",
+            event_type="user_message",
+            content="请记住我偏好简短提交，并且必须带 detail。",
+        )
+
+        self.assertIn("save_knowledge_candidate", loop_result["executed_actions"])
+
+        row = self.manager.conn.execute(
+            """
+            SELECT user_id, knowledge_type, title, canonical_text, status
+            FROM knowledge_candidate
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(row[0], "u4")
+        self.assertEqual(row[4], "pending")
+
+        self.assertGreaterEqual(len(self._audit_rows("save_knowledge_candidate")), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
-
