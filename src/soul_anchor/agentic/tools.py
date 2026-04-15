@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import datetime
 from typing import Any
 
 from soul_anchor.manager import MemoryManager
 from soul_anchor.db.variant import variant_sql_literal
+from soul_anchor.agentic.audit_writer import AuditWriter
 
 
 class MemoryToolAPI:
@@ -16,9 +16,7 @@ class MemoryToolAPI:
 
     def __init__(self, manager: MemoryManager):
         self.manager = manager
-
-    def _now_utc(self) -> datetime.datetime:
-        return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+        self._audit = AuditWriter(manager)
 
     def _ensure_connected(self) -> None:
         # MemoryManager already raises on missing connection; keep this wrapper for clarity.
@@ -28,33 +26,6 @@ class MemoryToolAPI:
     def _variant_literal(self, value: Any) -> str:
         return variant_sql_literal(value)
 
-    def _write_audit(
-        self,
-        *,
-        action_type: str,
-        session_id: str | None = None,
-        user_id: str | None = None,
-        decision_payload: Any | None = None,
-        tool_payload: Any | None = None,
-        result_summary: str | None = None,
-    ) -> int:
-        self._ensure_connected()
-
-        decision_sql = self._variant_literal(decision_payload)
-        tool_sql = self._variant_literal(tool_payload)
-
-        row = self.manager.conn.execute(
-            f"""
-            INSERT INTO memory_audit_log (
-                action_type, session_id, user_id, decision_payload, tool_payload, result_summary, created_at
-            )
-            VALUES (?, ?, ?, {decision_sql}, {tool_sql}, ?, ?)
-            RETURNING id
-            """,
-            [action_type, session_id, user_id, result_summary, self._now_utc()],
-        ).fetchone()
-        return int(row[0])
-
     def search_context(self, *, session_id: str, user_id: str, query: str, top_k: int = 10):
         self._ensure_connected()
         results = self.manager.search_recent_context_advanced(
@@ -63,7 +34,7 @@ class MemoryToolAPI:
             query=query,
             top_k=top_k,
         )
-        self._write_audit(
+        self._audit.write(
             action_type="search_context",
             session_id=session_id,
             user_id=user_id,
@@ -80,7 +51,7 @@ class MemoryToolAPI:
             query=query,
             top_k=top_k,
         )
-        self._write_audit(
+        self._audit.write(
             action_type="search_knowledge",
             session_id=None,
             user_id=user_id,
@@ -93,7 +64,7 @@ class MemoryToolAPI:
     def load_core_contract(self):
         self._ensure_connected()
         results = self.manager.load_core_contract()
-        self._write_audit(
+        self._audit.write(
             action_type="load_core_contract",
             session_id=None,
             user_id=None,
@@ -106,7 +77,7 @@ class MemoryToolAPI:
     def save_episode(self, event: dict[str, Any]) -> int:
         self._ensure_connected()
         record_id = self.manager.save_episode(event)
-        self._write_audit(
+        self._audit.write(
             action_type="save_episode",
             session_id=str(event.get("session_id")) if event.get("session_id") is not None else None,
             user_id=str(event.get("user_id")) if event.get("user_id") is not None else None,
@@ -142,7 +113,7 @@ class MemoryToolAPI:
         ).fetchone()
         candidate_id = int(row[0])
 
-        self._write_audit(
+        self._audit.write(
             action_type="save_knowledge_candidate",
             session_id=None,
             user_id=user_id,

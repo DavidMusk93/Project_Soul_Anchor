@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import datetime
 from typing import Any, Literal
 
 from soul_anchor.manager import MemoryManager
 from soul_anchor.db.variant import variant_sql_literal
+from soul_anchor.agentic.audit_writer import AuditWriter
 
 ResolutionStrategy = Literal["keep_existing", "replace", "merge_text"]
 
@@ -21,28 +21,23 @@ class ConflictResolver:
 
     def __init__(self, manager: MemoryManager):
         self.manager = manager
+        self._audit = AuditWriter(manager)
 
     def _ensure_connected(self) -> None:
         if self.manager.conn is None:
             raise RuntimeError("MemoryManager is not connected. Call connect() first.")
 
-    def _now_utc(self) -> datetime.datetime:
-        return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
-
     def _variant_literal(self, value: Any) -> str:
         return variant_sql_literal(value)
 
     def _write_audit(self, *, user_id: str, tool_payload: dict[str, Any], result_summary: str) -> None:
-        now = self._now_utc()
-        tool_sql = self._variant_literal(tool_payload)
-        self.manager.conn.execute(
-            f"""
-            INSERT INTO memory_audit_log (
-                action_type, session_id, user_id, decision_payload, tool_payload, result_summary, created_at
-            )
-            VALUES ('resolve_conflict', NULL, ?, NULL, {tool_sql}, ?, ?)
-            """,
-            [user_id, result_summary, now],
+        self._audit.write(
+            action_type="resolve_conflict",
+            session_id=None,
+            user_id=user_id,
+            decision_payload=None,
+            tool_payload=tool_payload,
+            result_summary=result_summary,
         )
 
     def resolve(self, *, conflict_id: int, strategy: ResolutionStrategy) -> None:
@@ -99,7 +94,7 @@ class ConflictResolver:
         existing_text = str(existing_text or "")
         candidate_text = str(candidate_text or "")
 
-        now = self._now_utc()
+        now = self._audit.now_utc()
 
         if strategy == "keep_existing":
             payload.update({"resolution": "keep_existing"})

@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import datetime
 from dataclasses import asdict
 from typing import Any
 
 from soul_anchor.agentic.decision_engine import MemoryDecision
 from soul_anchor.agentic.gating import MemoryGateResult, MemoryGating
 from soul_anchor.agentic.tools import MemoryToolAPI
-from soul_anchor.db.variant import variant_sql_literal
+from soul_anchor.agentic.audit_writer import AuditWriter
 from soul_anchor.manager import MemoryManager
 
 
@@ -21,16 +20,11 @@ class AuditRecorder:
 
     def __init__(self, manager: MemoryManager):
         self.manager = manager
-
-    def _now_utc(self) -> datetime.datetime:
-        return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+        self._audit = AuditWriter(manager)
 
     def _ensure_connected(self) -> None:
         if self.manager.conn is None:
             raise RuntimeError("MemoryManager is not connected. Call connect() first.")
-
-    def _variant_literal(self, value: Any) -> str:
-        return variant_sql_literal(value)
 
     def record_decision(
         self,
@@ -40,23 +34,15 @@ class AuditRecorder:
         decision: MemoryDecision,
         input_payload: dict[str, Any],
     ) -> int:
-        self._ensure_connected()
-
         decision_payload = asdict(decision)
-        decision_sql = self._variant_literal(decision_payload)
-        tool_sql = self._variant_literal(input_payload)
-
-        row = self.manager.conn.execute(
-            f"""
-            INSERT INTO memory_audit_log (
-                action_type, session_id, user_id, decision_payload, tool_payload, result_summary, created_at
-            )
-            VALUES ('decision', ?, ?, {decision_sql}, {tool_sql}, ?, ?)
-            RETURNING id
-            """,
-            [session_id, user_id, "ok", self._now_utc()],
-        ).fetchone()
-        return int(row[0])
+        return self._audit.write(
+            action_type="decision",
+            session_id=session_id,
+            user_id=user_id,
+            decision_payload=decision_payload,
+            tool_payload=input_payload,
+            result_summary="ok",
+        )
 
 
 class AuditVerifier:

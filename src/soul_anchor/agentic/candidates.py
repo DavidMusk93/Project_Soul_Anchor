@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import datetime
 from typing import Any
 
 from soul_anchor.manager import MemoryManager
 from soul_anchor.db.variant import variant_sql_literal
+from soul_anchor.agentic.audit_writer import AuditWriter
 
 
 class CandidateProcessor:
@@ -17,32 +17,17 @@ class CandidateProcessor:
 
     def __init__(self, manager: MemoryManager):
         self.manager = manager
+        self._audit = AuditWriter(manager)
 
     def _ensure_connected(self) -> None:
         if self.manager.conn is None:
             raise RuntimeError("MemoryManager is not connected. Call connect() first.")
 
-    def _now_utc(self) -> datetime.datetime:
-        return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
-
     def _variant_literal(self, value: Any) -> str:
         return variant_sql_literal(value)
 
-    def _write_audit(self, *, action_type: str, user_id: str, tool_payload: Any, result_summary: str) -> None:
-        now = self._now_utc()
-        tool_sql = self._variant_literal(tool_payload)
-        self.manager.conn.execute(
-            f"""
-            INSERT INTO memory_audit_log (
-                action_type, session_id, user_id, decision_payload, tool_payload, result_summary, created_at
-            )
-            VALUES (?, NULL, ?, NULL, {tool_sql}, ?, ?)
-            """,
-            [action_type, user_id, result_summary, now],
-        )
-
     def _update_candidate(self, *, candidate_id: int, status: str, payload: dict[str, Any]) -> None:
-        now = self._now_utc()
+        now = self._audit.now_utc()
         payload_sql = self._variant_literal(payload)
         self.manager.conn.execute(
             f"""
@@ -141,7 +126,7 @@ class CandidateProcessor:
             duplicate_of = int(dup[0])
             payload.update({"duplicate_of": duplicate_of, "duplicate_kind": "semantic"})
             self._update_candidate(candidate_id=int(candidate_id), status="duplicate", payload=payload)
-            self._write_audit(
+            self._audit.write(
                 action_type="candidate_duplicate",
                 user_id=str(user_id),
                 tool_payload={"candidate_id": int(candidate_id), "duplicate_of": duplicate_of},
@@ -186,7 +171,7 @@ class CandidateProcessor:
                 )
                 payload.update({"conflict_with": existing_id, "conflict_type": "title_conflict"})
                 self._update_candidate(candidate_id=int(candidate_id), status="conflict", payload=payload)
-                self._write_audit(
+                self._audit.write(
                     action_type="candidate_conflict",
                     user_id=str(user_id),
                     tool_payload={"candidate_id": int(candidate_id), "existing_knowledge_id": existing_id},
@@ -219,7 +204,7 @@ class CandidateProcessor:
 
         payload.update({"merged_knowledge_id": merged_id})
         self._update_candidate(candidate_id=int(candidate_id), status="merged", payload=payload)
-        self._write_audit(
+        self._audit.write(
             action_type="merge_candidate",
             user_id=str(user_id),
             tool_payload={"candidate_id": int(candidate_id), "merged_knowledge_id": merged_id},

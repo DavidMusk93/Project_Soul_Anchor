@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import datetime
 from typing import Any
 
 from soul_anchor.manager import MemoryManager
 from soul_anchor.db.variant import variant_sql_literal
+from soul_anchor.agentic.audit_writer import AuditWriter
 
 
 class KnowledgeVersioning:
@@ -17,29 +17,14 @@ class KnowledgeVersioning:
 
     def __init__(self, manager: MemoryManager):
         self.manager = manager
+        self._audit = AuditWriter(manager)
 
     def _ensure_connected(self) -> None:
         if self.manager.conn is None:
             raise RuntimeError("MemoryManager is not connected. Call connect() first.")
 
-    def _now_utc(self) -> datetime.datetime:
-        return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
-
     def _variant_literal(self, value: Any) -> str:
         return variant_sql_literal(value)
-
-    def _write_audit(self, *, action_type: str, user_id: str, tool_payload: dict[str, Any], result_summary: str):
-        now = self._now_utc()
-        tool_sql = self._variant_literal(tool_payload)
-        self.manager.conn.execute(
-            f"""
-            INSERT INTO memory_audit_log (
-                action_type, session_id, user_id, decision_payload, tool_payload, result_summary, created_at
-            )
-            VALUES (?, NULL, ?, NULL, {tool_sql}, ?, ?)
-            """,
-            [action_type, user_id, result_summary, now],
-        )
 
     def create_snapshot(self, *, knowledge_id: int, reason: str | None = None) -> int:
         self._ensure_connected()
@@ -87,7 +72,7 @@ class KnowledgeVersioning:
         }
 
         payload_sql = self._variant_literal(payload)
-        now = self._now_utc()
+        now = self._audit.now_utc()
         snap = self.manager.conn.execute(
             f"""
             INSERT INTO knowledge_version_snapshot (knowledge_id, snapshot_payload, reason, created_at)
@@ -98,7 +83,7 @@ class KnowledgeVersioning:
         ).fetchone()
         snapshot_id = int(snap[0])
 
-        self._write_audit(
+        self._audit.write(
             action_type="create_snapshot",
             user_id=str(user_id),
             tool_payload={"knowledge_id": int(knowledge_id), "snapshot_id": snapshot_id, "reason": reason},
@@ -142,7 +127,7 @@ class KnowledgeVersioning:
             ).fetchone()
             user_id = cur[0] if cur else None
 
-        now = self._now_utc()
+        now = self._audit.now_utc()
         metadata_sql = self._variant_literal(payload.get("metadata"))
 
         # Restore a conservative subset of fields (expandable later).
@@ -178,7 +163,7 @@ class KnowledgeVersioning:
             ],
         )
 
-        self._write_audit(
+        self._audit.write(
             action_type="rollback_to_snapshot",
             user_id=str(user_id) if user_id is not None else "unknown",
             tool_payload={
