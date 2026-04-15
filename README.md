@@ -1,76 +1,111 @@
-# Project Soul Anchor (AIME Guide)
+# Project Soul Anchor（AIME 使用手册）
 
-This repository provides a local memory system built on DuckDB. It includes:
+本仓库提供一个基于 DuckDB 的本地“分层记忆系统”，并逐步引入 agentic（自主调用/门控/审计/候选升级/冲突处理/版本回滚）能力。
 
-- L1 episodic memory (`context_stream`)
-- L2 semantic memory (`semantic_knowledge`)
-- L3 core contract (`core_contract`)
-- Agentic layers (Phase 3.x): tools, decision, gating, audit, candidates, conflicts, versioning
+## 1. 系统概览
 
-This document is the practical guide for AIME to run and operate the project.
+**分层记忆**
 
-## Environment
+- L1 事件流（短期/可过期）：`context_stream`
+- L2 稳定知识（可检索/可升级）：`semantic_knowledge`
+- L3 核心契约（最高优先级约束）：`core_contract`
 
-### Requirements
+**Agentic 组件（Phase 3.x）**
 
-- macOS or Linux
-- Python: 3.11+
-- DuckDB Python package (project uses DuckDB local file database)
+- Tools：对外统一 Memory Tool API（会写审计）
+- Decision：规则版决策输出 `MemoryDecision`
+- Gating：写入门控（噪声过滤、重复检测、L3 禁止自动写）
+- Audit：闭环执行器（Decide→Gate→Act→Audit）
+- Candidates：候选合并/重复/冲突注册
+- Conflicts：冲突解决（keep_existing/replace/merge_text）
+- Versioning：知识快照与回滚
 
-### Virtualenv
+## 2. 流程图
 
-Create and use a venv in repo root:
+### 2.1 闭环主流程（Decide → Gate → Act → Audit）
+
+```mermaid
+flowchart LR
+  A[Input: user/tool event] --> B[DecisionEngine.decide]
+  B --> C{MemoryGating}
+  C -->|accept| D[MemoryToolAPI actions]
+  C -->|reject| E[Drop / Requires Review]
+  D --> F[(DuckDB Tables)]
+  D --> G[(memory_audit_log)]
+  B --> G
+```
+
+### 2.2 候选升级与冲突处理（Phase 3.2）
+
+```mermaid
+flowchart LR
+  A[knowledge_candidate: pending] --> B[CandidateProcessor.process_pending]
+  B -->|merge| C[semantic_knowledge insert]
+  B -->|duplicate| D[mark candidate duplicate]
+  B -->|conflict| E[conflict_registry insert]
+  C --> F[(memory_audit_log)]
+  D --> F
+  E --> F
+  E --> G[ConflictResolver.resolve]
+  G -->|keep_existing| H[reject candidate]
+  G -->|replace| I[overwrite semantic_knowledge]
+  G -->|merge_text| J[merge texts]
+  H --> F
+  I --> F
+  J --> F
+```
+
+## 3. 环境与安装
+
+**要求**
+
+- macOS 或 Linux
+- Python 3.11+
+
+**创建虚拟环境**
 
 ```bash
 python3.11 -m venv .venv
 ./.venv/bin/python -m pip install --upgrade pip
 ```
 
-Install runtime dependencies:
+**安装依赖**
 
 ```bash
 ./.venv/bin/python -m pip install duckdb
 ```
 
-Optional: install tooling (linter):
+**安装工具（可选）**
 
 ```bash
 ./.venv/bin/python -m pip install ruff
 ```
 
-### ByteDance Internal PyPI (Optional)
-
-If you want to use the internal index:
+**字节内部源（可选）**
 
 ```bash
 ./.venv/bin/python -m pip install --index-url https://bytedpypi.byted.org/simple duckdb
 ```
 
-## Project Layout
+## 4. 项目结构
 
-- `src/soul_anchor/manager.py`: main facade (`MemoryManager`)
-- `src/soul_anchor/db/schema.py`: schema initialization (all phases)
-- `src/soul_anchor/retrieval/`: ranking and context packet assembly
-- `src/soul_anchor/agentic/`: Phase 3.x agentic modules
-- `tests/`: unit tests (phase-based splits)
+- `src/soul_anchor/manager.py`：核心入口 `MemoryManager`
+- `src/soul_anchor/db/schema.py`：schema 初始化（Phase 1/3.1/3.2/3.3）
+- `src/soul_anchor/db/variant.py`：VARIANT 编码工具
+- `src/soul_anchor/retrieval/`：检索与 context packet 组装
+- `src/soul_anchor/agentic/`：agentic 模块（tools/decision/gating/audit/candidates/conflicts/versioning）
+- `tests/`：测试用例（按 phase 拆分）
 
-## Quick Start
+## 5. 快速开始
 
-### Run Tests
+### 5.1 运行测试与静态检查
 
 ```bash
 ./.venv/bin/python -m unittest -v
-```
-
-Run linter:
-
-```bash
 ./.venv/bin/ruff check .
 ```
 
-### Create / Connect Database
-
-DuckDB runs as a single local file by default:
+### 5.2 连接数据库并自动建表
 
 ```python
 from soul_anchor.manager import MemoryManager
@@ -79,11 +114,11 @@ mm = MemoryManager("aime_evolution.duckdb")
 mm.connect()
 ```
 
-Tables are created automatically on first connect (`init_schema`).
+首次 `connect()` 会自动执行 schema 初始化（见 `src/soul_anchor/db/schema.py`）。
 
-## Core APIs (Phase 1/2)
+## 6. 核心 API（Phase 1/2）
 
-### L1: Save and Search Episodic Events
+### 6.1 写入 L1 事件与检索 L1
 
 ```python
 from soul_anchor.manager import MemoryManager
@@ -96,7 +131,7 @@ event_id = mm.save_episode(
         "session_id": "s1",
         "user_id": "u1",
         "event_type": "user_message",
-        "content": "Please keep commits short but with detail.",
+        "content": "请记住我偏好简短提交，但必须带 detail。",
         "metadata": {"channel": "chat"},
         "embedding": [0.1, 0.2, 0.3],
     }
@@ -105,12 +140,12 @@ event_id = mm.save_episode(
 recent = mm.search_recent_context_advanced(
     session_id="s1",
     user_id="u1",
-    query="commits",
+    query="提交",
     top_k=5,
 )
 ```
 
-### L2: Save and Search Knowledge
+### 6.2 写入 L2 知识与检索 L2
 
 ```python
 from soul_anchor.manager import MemoryManager
@@ -132,7 +167,7 @@ kid = mm.save_knowledge(
 hits = mm.search_knowledge(user_id="u1", query="commit", top_k=5)
 ```
 
-### Build Context Packet (L3 -> L2 -> L1)
+### 6.3 构建 Context Packet（L3 → L2 → L1）
 
 ```python
 packet = mm.build_context_packet(
@@ -146,18 +181,16 @@ packet = mm.build_context_packet(
 )
 ```
 
-The return value is a dict:
+返回结构：
 
-- `core_contract`: ordered by priority desc
-- `semantic_knowledge`: ranked list
-- `recent_context`: ranked list
-- `metadata.total_chars`: approximate payload size
+- `core_contract`
+- `semantic_knowledge`
+- `recent_context`
+- `metadata.total_chars`
 
-## Agentic Usage (Phase 3.x)
+## 7. Agentic 用法（Phase 3.x）
 
-### 1) Memory Tool API (Auditable Tools)
-
-`MemoryToolAPI` is the recommended entry point for agentic calls (it writes audit logs):
+### 7.1 Memory Tool API（推荐入口，自动写审计）
 
 ```python
 from soul_anchor.manager import MemoryManager
@@ -172,17 +205,17 @@ tools.save_episode(
         "session_id": "s1",
         "user_id": "u1",
         "event_type": "user_message",
-        "content": "Please remember my preferences.",
+        "content": "请记住：每次改动后都要提交，并附带 detail。",
     }
 )
 
-ctx = tools.search_context(session_id="s1", user_id="u1", query="preferences", top_k=5)
+ctx = tools.search_context(session_id="s1", user_id="u1", query="提交", top_k=5)
 know = tools.search_knowledge(user_id="u1", query="commit", top_k=5)
 ```
 
-Every tool call inserts a row into `memory_audit_log`.
+所有 tool 调用都会写入 `memory_audit_log`。
 
-### 2) Decision -> Gate -> Act -> Audit (Minimal Closed Loop)
+### 7.2 最小闭环（Decide → Gate → Act → Audit）
 
 ```python
 from soul_anchor.agentic.audit import AgenticLoopRunner, AuditRecorder, AuditVerifier
@@ -206,23 +239,23 @@ result = runner.run_event(
     session_id="s1",
     user_id="u1",
     event_type="user_message",
-    content="Still use the previous approach: write tests first.",
+    content="还是按上次那种方式来：先写测试再实现。",
 )
 ```
 
-`result` contains:
+`result` 包含：
 
-- `decision`: structured `MemoryDecision`
-- `executed_actions`: executed tool action names
-- `audit_ids.decision_audit_id`: audit row id for the decision step
+- `decision`：结构化决策
+- `executed_actions`：实际执行动作列表
+- `audit_ids.decision_audit_id`：决策审计条目 id
 
-### 3) Candidate Processing (Phase 3.2)
+### 7.3 候选处理（Phase 3.2）
 
-Candidates live in `knowledge_candidate` and are processed into:
+候选知识写入 `knowledge_candidate`，再由处理器升级为：
 
-- `merged`: inserted into `semantic_knowledge`
-- `duplicate`: marked duplicate of existing semantic knowledge
-- `conflict`: registered in `conflict_registry`
+- `merged`：写入 `semantic_knowledge`
+- `duplicate`：标记为重复
+- `conflict`：写入 `conflict_registry` 等待处理
 
 ```python
 from soul_anchor.agentic.candidates import CandidateProcessor
@@ -231,13 +264,7 @@ processor = CandidateProcessor(mm)
 stats = processor.process_pending(limit=50)
 ```
 
-### 4) Conflict Resolution (Phase 3.2)
-
-Resolve a `conflict_registry` row with one of:
-
-- `keep_existing`
-- `replace`
-- `merge_text`
+### 7.4 冲突解决（Phase 3.2）
 
 ```python
 from soul_anchor.agentic.conflicts import ConflictResolver
@@ -246,52 +273,38 @@ resolver = ConflictResolver(mm)
 resolver.resolve(conflict_id=123, strategy="merge_text")
 ```
 
-All resolutions write an audit entry with `action_type="resolve_conflict"`.
+策略：
 
-### 5) Knowledge Versioning (Phase 3.3)
+- `keep_existing`
+- `replace`
+- `merge_text`
 
-Snapshots are stored in `knowledge_version_snapshot`.
+### 7.5 知识版本快照与回滚（Phase 3.3）
 
 ```python
 from soul_anchor.agentic.versioning import KnowledgeVersioning
 
 versioning = KnowledgeVersioning(mm)
-snapshot_id = versioning.create_snapshot(knowledge_id=42, reason="before conflict resolution")
+snapshot_id = versioning.create_snapshot(knowledge_id=42, reason="before resolution")
 versioning.rollback_to_snapshot(knowledge_id=42, snapshot_id=snapshot_id, reason="bad merge")
 ```
 
-Both operations write to `memory_audit_log` (`create_snapshot`, `rollback_to_snapshot`).
+## 8. 运维与排障（Runbook）
 
-## Operations (Runbook)
+### 8.1 数据库文件管理
 
-### Database File Management
+- DuckDB 是单文件数据库：示例文件名 `aime_evolution.duckdb`
+- 建议 DB 文件不要纳入 git（已在 `.gitignore` 中处理）
 
-- Default DB file name used by examples: `aime_evolution.duckdb`
-- DuckDB is a single local file. Back it up like a normal file.
+### 8.2 安全变更流程（推荐）
 
-Recommended:
+1. 对即将修改的 `semantic_knowledge` 行先打快照（Phase 3.3）
+2. 执行候选合并/冲突解决
+3. 如果效果不符合预期，使用 snapshot 回滚
 
-- Keep DB files out of git (already ignored by `.gitignore`)
-- Backup schedule: copy DB file daily or before risky operations (conflict resolution, batch merges)
-- For incident response: restore the DB file from backup
+### 8.3 可观测性（审计表）
 
-### Safe Changes Workflow
-
-If you are about to modify stable L2 knowledge in bulk:
-
-1. Create a snapshot per affected knowledge row (Phase 3.3).
-2. Apply conflict resolution / merge candidates.
-3. If needed, rollback using the snapshot id.
-
-### Monitoring / Observability
-
-The main operational signal is `memory_audit_log`:
-
-- What actions are being called (search, write, merge, resolve, rollback)
-- Which user/session triggered them
-- Payload and result summary
-
-Example query:
+核心可观测信号来自 `memory_audit_log`，可统计系统行为分布：
 
 ```sql
 SELECT action_type, count(*) AS n
@@ -300,21 +313,8 @@ GROUP BY action_type
 ORDER BY n DESC;
 ```
 
-### Concurrency Notes
+### 8.4 常见问题
 
-DuckDB is excellent for local analytics and single-process workloads. For multi-process writes:
-
-- Prefer a single writer process
-- If you need multi-writer concurrency, add an explicit queue / service layer in front of DuckDB
-
-### Common Troubleshooting
-
-- Import errors: ensure `./.venv` is active and you run tests from repo root.
-- Failing tests: run `./.venv/bin/python -m unittest -v` and inspect the first failing module.
-- Linter: run `./.venv/bin/ruff check .`
-
-## Migration Notes
-
-- Legacy import `from MemoryManager import MemoryManager` is no longer supported.
-- Use `from soul_anchor.manager import MemoryManager` (preferred) or `from soul_anchor import MemoryManager`.
-- See `MIGRATION.md` for details.
+- 导入失败：确认从仓库根目录运行，且使用 `./.venv/bin/python`
+- 测试失败：执行 `./.venv/bin/python -m unittest -v`，从第一个失败用例定位
+- ruff 报错：执行 `./.venv/bin/ruff check .`
