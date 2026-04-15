@@ -77,6 +77,29 @@ class TestSchema(unittest.TestCase):
         self.assertEqual(audit_columns["decision_payload"], "VARIANT")
         self.assertEqual(audit_columns["tool_payload"], "VARIANT")
 
+    def test_phase32_schema_is_initialized(self):
+        tables = self.manager.conn.execute(
+            """
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'main'
+            ORDER BY table_name
+            """
+        ).fetchall()
+
+        self.assertIn(("conflict_registry",), tables)
+
+    def test_phase32_schema_columns(self):
+        conflict_columns = {
+            name: data_type
+            for _, name, data_type, _, _, _ in self.manager.conn.execute(
+                "PRAGMA table_info('conflict_registry')"
+            ).fetchall()
+        }
+
+        self.assertEqual(conflict_columns["details"], "VARIANT")
+        self.assertEqual(conflict_columns["status"], "VARCHAR")
+
 
 if __name__ == "__main__":
     unittest.main()

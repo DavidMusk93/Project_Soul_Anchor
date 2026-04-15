@@ -97,3 +97,20 @@ def init_schema(conn: duckdb.DuckDBPyConnection) -> None:
         );
         """
     )
+
+    conn.execute(
+        """
+        CREATE SEQUENCE IF NOT EXISTS seq_conflict_registry START 1;
+        CREATE TABLE IF NOT EXISTS conflict_registry (
+            id BIGINT PRIMARY KEY DEFAULT nextval('seq_conflict_registry'),
+            user_id VARCHAR NOT NULL,
+            candidate_id BIGINT,
+            existing_knowledge_id BIGINT,
+            conflict_type VARCHAR NOT NULL,
+            status VARCHAR DEFAULT 'open',
+            details VARIANT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            resolved_at TIMESTAMP
+        );
+        """
+    )
