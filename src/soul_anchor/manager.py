@@ -248,11 +248,46 @@ class MemoryManager:
         candidate_pool: int | None = None,
     ) -> list[dict[str, Any]]:
         """
-        Phase 2: Search semantic_knowledge with relevance-first ranking and explanations.
+        Search L2 semantic knowledge for a user.
 
         Notes:
-        - This is still a lightweight keyword-based implementation.
-        - FTS/hybrid retrieval can replace the scoring internals later without changing the API.
+        - Default behavior is keyword-based ranking (Phase 2) and is stable/backward compatible.
+        - When `use_embedding=True`, the function performs a hybrid rerank:
+          1) build a keyword-based candidate pool
+          2) compute cosine similarity between query embedding and row embeddings
+          3) rerank the pool by a hybrid score (keyword score + weighted vector score)
+
+        Args:
+            query: Natural language query.
+            user_id: Target user id.
+            top_k: Number of results to return.
+            use_embedding:
+                If True, enable embedding-based reranking. This improves robustness for
+                input variants (e.g. whitespace/format changes, paraphrases) at the cost
+                of extra CPU (cosine similarity over the candidate pool).
+                If False, keep pure keyword ranking.
+            candidate_pool:
+                Only used when `use_embedding=True`.
+                Controls how many keyword-ranked candidates are pulled into the pool
+                before vector reranking. Larger pools can improve recall but increase
+                CPU cost linearly.
+
+                - None (default): uses an internal heuristic (roughly max(top_k * 10, 50)).
+                - int: explicit pool size; will be clamped to at least top_k.
+
+        Returns:
+            A list of dicts. When `use_embedding=False`, items include:
+            - id/title/canonical_text/keywords/confidence_score/stability_score/retrieval_score/match_reasons
+
+            When `use_embedding=True`, items additionally include:
+            - vector_score: cosine(query_vec, row_vec)
+            - hybrid_score: retrieval_score + vector_score * weight
+
+        Example:
+
+        ```python
+        mm.search_knowledge(query="abcxyz", user_id="david", top_k=5, use_embedding=True)
+        ```
         """
         self._ensure_connected()
         return search_knowledge_impl(
