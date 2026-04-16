@@ -28,7 +28,11 @@ class MemoryManager:
 
     def connect(self):
         """建立连接并确保核心 Schema 就绪"""
-        self.conn = duckdb.connect(self.db_path)
+        self.conn = duckdb.connect(":memory:")
+        self.conn.execute(
+            f"ATTACH '{self.db_path}' AS soul_anchor_db (STORAGE_VERSION 'v1.5.0')"
+        )
+        self.conn.execute("USE soul_anchor_db")
         self._init_schema()
 
     def _init_schema(self):

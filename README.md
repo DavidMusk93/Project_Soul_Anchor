@@ -318,3 +318,29 @@ ORDER BY n DESC;
 - 导入失败：确认从仓库根目录运行，且使用 `./.venv/bin/python`
 - 测试失败：执行 `./.venv/bin/python -m unittest -v`，从第一个失败用例定位
 - ruff 报错：执行 `./.venv/bin/ruff check .`
+
+### 8.5 DuckDB VARIANT 支持与存储版本格式
+
+**问题现象**
+
+在包含 `VARIANT` 类型的表执行初始化时，可能会遇到如下报错：
+
+```text
+Invalid Input Exception: VARIANT columns are not supported in storage versions prior to v1.5.0...
+```
+
+**根本原因**
+
+即使用户安装了 DuckDB 1.5.x，默认新建的数据库文件存储格式仍可能是 `v1.0.0+`，而 `VARIANT` 这类高级类型强制要求存储格式为 `v1.5.0`。
+
+**解决办法**
+
+在 Python 建立连接时，先连接 `:memory:`，然后使用 `ATTACH` 命令并带上 `STORAGE_VERSION` 参数挂载物理文件：
+
+```python
+conn = duckdb.connect(':memory:')
+conn.execute(f"ATTACH '{db_path}' AS db_name (STORAGE_VERSION 'v1.5.0');")
+conn.execute("USE db_name;")
+```
+
+这样可以确保后续在物理 DuckDB 文件中创建包含 `VARIANT` 列的表时，底层存储版本满足要求。
