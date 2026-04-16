@@ -67,6 +67,38 @@ class TestMemoryManagerPhase2(unittest.TestCase):
         self.assertTrue(result["match_reasons"]["title"])
         self.assertTrue(result["match_reasons"]["keywords"])
 
+    def test_phase2_search_knowledge_hybrid_reranks_by_embedding_similarity(self):
+        # The dummy embedder normalizes away whitespace, so "abc xyz" should be very close to query "abcxyz".
+        self.manager.save_knowledge(
+            {
+                "user_id": "david",
+                "knowledge_type": "note",
+                "title": "Spaced",
+                "canonical_text": "abc xyz",
+                "stability_score": 0.9,
+                "confidence_score": 0.9,
+            }
+        )
+        self.manager.save_knowledge(
+            {
+                "user_id": "david",
+                "knowledge_type": "note",
+                "title": "ExactButNoisy",
+                "canonical_text": "abcxyz " + (" loremipsum" * 80),
+                "stability_score": 0.6,
+                "confidence_score": 0.6,
+            }
+        )
+
+        # Keyword-only will prefer the exact substring match in the noisy text.
+        baseline = self.manager.search_knowledge(query="abcxyz", user_id="david", top_k=2)
+        self.assertEqual(baseline[0]["title"], "ExactButNoisy")
+
+        hybrid = self.manager.search_knowledge(query="abcxyz", user_id="david", top_k=2, use_embedding=True)
+        self.assertEqual(hybrid[0]["title"], "Spaced")
+        self.assertIn("vector_score", hybrid[0])
+        self.assertIn("hybrid_score", hybrid[0])
+
     def test_phase2_search_recent_context_applies_recency_and_salience_weights(self):
         older_id = self.manager.save_episode(
             {

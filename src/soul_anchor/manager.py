@@ -54,11 +54,10 @@ class MemoryManager:
 
     def _embed_text(self, text: str) -> list[float]:
         """
-        Phase 1 placeholder.
-        In Phase 2/3 this should call a real embedder and store vectors.
+        Phase 3.4: deterministic dummy embedding for local hybrid retrieval.
+        This can be swapped to a real embedding service without changing call sites.
         """
-        _ = text
-        return []
+        return embed_text(text, dim=DUMMY_EMBEDDING_DIM)
 
     def save_episode(self, event: dict[str, Any]) -> int:
         """
@@ -245,6 +244,8 @@ class MemoryManager:
         query: str,
         user_id: str,
         top_k: int = 10,
+        use_embedding: bool = False,
+        candidate_pool: int | None = None,
     ) -> list[dict[str, Any]]:
         """
         Phase 2: Search semantic_knowledge with relevance-first ranking and explanations.
@@ -259,6 +260,8 @@ class MemoryManager:
             query=query,
             user_id=user_id,
             top_k=top_k,
+            use_embedding=use_embedding,
+            candidate_pool=candidate_pool,
             now=self._now_utc(),
             embed_text=self._embed_text,
         )

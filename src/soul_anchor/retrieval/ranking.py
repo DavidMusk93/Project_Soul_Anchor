@@ -5,6 +5,7 @@ from typing import Any, Callable
 
 import duckdb
 
+from soul_anchor.embedding.similarity import cosine
 
 def tokenize(text: str) -> list[str]:
     return [token.strip().lower() for token in text.split() if token.strip()]
@@ -162,15 +163,17 @@ def search_knowledge(
     query: str,
     user_id: str,
     top_k: int,
+    use_embedding: bool = False,
+    candidate_pool: int | None = None,
     now: datetime.datetime,
     embed_text: Callable[[str], list[float]],
 ) -> list[dict[str, Any]]:
-    _ = embed_text(query)
+    query_vec = embed_text(query) if use_embedding else []
     terms = tokenize(query) or [query.lower()]
     rows = conn.execute(
         """
         SELECT
-            id, title, canonical_text, keywords, confidence_score, stability_score
+            id, title, canonical_text, keywords, confidence_score, stability_score, embedding
         FROM semantic_knowledge
         WHERE is_active = TRUE
           AND user_id = ?
@@ -183,7 +186,7 @@ def search_knowledge(
             return False
         return term in text.lower()
 
-    scored: list[tuple[float, tuple[Any, ...], dict[str, bool]]] = []
+    scored: list[tuple[float, tuple[Any, ...], dict[str, bool], float]] = []
     for row in rows:
         title_hit = any(_hit(row[1], term) for term in terms)
         keywords_hit = any(_hit(row[3], term) for term in terms)
@@ -195,33 +198,52 @@ def search_knowledge(
         relevance += 1.0 if text_hit else 0.0
 
         retrieval_score = relevance * 1000.0 + float(row[5]) * 10.0 + float(row[4])
+        vector_score = 0.0
+        if use_embedding and row[6] is not None:
+            vector_score = cosine(list(query_vec), list(row[6]))
         scored.append(
             (
                 retrieval_score,
                 row,
                 {"title": title_hit, "keywords": keywords_hit, "canonical_text": text_hit},
+                vector_score,
             )
         )
 
     scored.sort(key=lambda item: item[0], reverse=True)
-    selected = scored[: int(top_k)]
+
+    pool = int(candidate_pool) if candidate_pool is not None else max(int(top_k) * 10, 50)
+    pool = max(pool, int(top_k))
+    selected_pool = scored[:pool]
+
+    if use_embedding:
+        # Hybrid: use vector similarity to rerank a keyword-derived candidate pool.
+        vector_weight = 2000.0
+        selected_pool.sort(key=lambda item: (item[0] + item[3] * vector_weight), reverse=True)
+
+    selected = selected_pool[: int(top_k)]
     _touch_semantic_rows(conn, now=now, ids=[int(item[1][0]) for item in selected])
 
     results: list[dict[str, Any]] = []
-    for retrieval_score, row, reasons in selected:
-        row_id, title, canonical_text, keywords, confidence_score, stability_score = row
+    for retrieval_score, row, reasons, vector_score in selected:
+        row_id, title, canonical_text, keywords, confidence_score, stability_score, _embedding = row
+        item: dict[str, Any] = {
+            "id": int(row_id),
+            "title": title,
+            "content": canonical_text,
+            "canonical_text": canonical_text,
+            "keywords": keywords,
+            "confidence_score": float(confidence_score),
+            "stability_score": float(stability_score),
+            "retrieval_score": float(retrieval_score),
+            "match_reasons": reasons,
+        }
+        if use_embedding:
+            vector_weight = 2000.0
+            item["vector_score"] = float(vector_score)
+            item["hybrid_score"] = float(retrieval_score + vector_score * vector_weight)
         results.append(
-            {
-                "id": int(row_id),
-                "title": title,
-                "content": canonical_text,
-                "canonical_text": canonical_text,
-                "keywords": keywords,
-                "confidence_score": float(confidence_score),
-                "stability_score": float(stability_score),
-                "retrieval_score": float(retrieval_score),
-                "match_reasons": reasons,
-            }
+            item
         )
     return results
 
