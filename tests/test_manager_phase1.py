@@ -192,6 +192,36 @@ class TestMemoryManagerPhase1(unittest.TestCase):
         for actual, expected in zip(list(row[1]), [0.7, 0.8, 0.9]):
             self.assertAlmostEqual(actual, expected, places=6)
 
+    def test_save_knowledge_auto_generates_embedding_when_missing(self):
+        knowledge_id = self.manager.save_knowledge(
+            {
+                "user_id": "david",
+                "knowledge_type": "workflow",
+                "title": "Commit Discipline",
+                "canonical_text": "每次改动后都要提交，并且必须带 detail。",
+                "keywords": "commit,discipline",
+                "metadata": {"source": "user_preference"},
+            }
+        )
+
+        metadata, embedding = self.manager.conn.execute(
+            """
+            SELECT metadata, embedding
+            FROM semantic_knowledge
+            WHERE id = ?
+            """,
+            [knowledge_id],
+        ).fetchone()
+
+        self.assertIsInstance(metadata, dict)
+        self.assertEqual(metadata["source"], "user_preference")
+        self.assertEqual(metadata["embedding_model"], "dummy:v0")
+        self.assertEqual(metadata["embedding_dim"], 64)
+
+        emb = list(embedding)
+        self.assertEqual(len(emb), 64)
+        self.assertTrue(all(isinstance(v, float) for v in emb))
+
     def test_build_context_packet_prioritizes_l3_then_l2_then_l1(self):
         self.manager.upsert_core_contract("identity", "Allen 是持续进化的协作智能体。", priority=100)
         self.manager.upsert_core_contract("memory_principle", "必须区分 L1/L2/L3。", priority=900)

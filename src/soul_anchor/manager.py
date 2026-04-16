@@ -8,6 +8,7 @@ import duckdb
 
 from soul_anchor.db import init_schema
 from soul_anchor.db.variant import variant_sql_literal
+from soul_anchor.embedding.dummy import DUMMY_EMBEDDING_DIM, DUMMY_EMBEDDING_MODEL_ID, embed_text
 from soul_anchor.retrieval import (
     build_context_packet as build_context_packet_impl,
     recall_memory as recall_memory_impl,
@@ -180,6 +181,23 @@ class MemoryManager:
         metadata = knowledge.get("metadata")
         embedding = knowledge.get("embedding")
         is_active = bool(knowledge.get("is_active", True))
+
+        # Phase 3.4 (MVP): auto-generate L2 embeddings when not provided.
+        if embedding is None:
+            text_for_embedding = "\n".join(
+                [
+                    str(title or ""),
+                    str(keywords or ""),
+                    str(canonical_text or ""),
+                ]
+            ).strip()
+            embedding = embed_text(text_for_embedding, dim=DUMMY_EMBEDDING_DIM)
+
+            if metadata is None:
+                metadata = {}
+            if isinstance(metadata, dict):
+                metadata.setdefault("embedding_model", DUMMY_EMBEDDING_MODEL_ID)
+                metadata.setdefault("embedding_dim", DUMMY_EMBEDDING_DIM)
 
         row = self.conn.execute(
             f"""
