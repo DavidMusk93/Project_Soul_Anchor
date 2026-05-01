@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import datetime
+import logging
 import os
 from typing import Any
 
 import duckdb
+
+
+logger = logging.getLogger(__name__)
 
 from soul_anchor.db import init_schema
 from soul_anchor.db.variant import variant_sql_literal
@@ -15,6 +19,12 @@ from soul_anchor.retrieval import (
     search_knowledge as search_knowledge_impl,
     search_recent_context as search_recent_context_impl,
     search_recent_context_advanced as search_recent_context_advanced_impl,
+)
+from soul_anchor.retrieval.fts import (
+    fts_search_knowledge as fts_search_knowledge_impl,
+    fts_search_context as fts_search_context_impl,
+    refresh_fts_indexes as refresh_fts_indexes_impl,
+    setup_fts_index as setup_fts_index_impl,
 )
 
 class MemoryManager:
@@ -28,13 +38,14 @@ class MemoryManager:
         self.conn = None
 
     def connect(self):
-        """建立连接并确保核心 Schema 就绪"""
+        """建立连接、初始化 Schema、构建 FTS 索引"""
         self.conn = duckdb.connect(":memory:")
         self.conn.execute(
             f"ATTACH '{self.db_path}' AS soul_anchor_db (STORAGE_VERSION 'v1.5.0')"
         )
         self.conn.execute("USE soul_anchor_db")
         self._init_schema()
+        self.setup_fts()
 
     def _init_schema(self):
         init_schema(self.conn)
@@ -119,6 +130,7 @@ class MemoryManager:
             ],
         ).fetchone()
 
+        self.refresh_fts()
         return int(row[0])
 
     def search_recent_context(
@@ -221,6 +233,7 @@ class MemoryManager:
             ],
         ).fetchone()
 
+        self.refresh_fts()
         return int(row[0])
 
     def recall_memory(self, *, query: str, user_id: str, top_k: int = 10) -> list[dict[str, Any]]:
@@ -364,6 +377,77 @@ class MemoryManager:
             load_core_contract=self.load_core_contract,
             search_knowledge=self.search_knowledge,
             search_recent_context_advanced=self.search_recent_context_advanced,
+        )
+
+    # ------------------------------------------------------------------
+    # FTS (Full Text Search) — DuckDB fts extension, BM25 ranking
+    # https://duckdb.org/docs/extensions/full_text_search
+    #
+    # Index lifecycle:
+    #   - Built once at connection time (setup_fts called from connect())
+    #   - Refreshed after every write (save_episode / save_knowledge)
+    #   - Search methods never rebuild — zero read-path overhead
+    # ------------------------------------------------------------------
+
+    def setup_fts(self) -> None:
+        """
+        Build BM25 indexes on semantic_knowledge and context_stream.
+        Called once at connection time. Safe to call multiple times.
+        """
+        logger.info("Building FTS indexes at connection time...")
+        self._ensure_connected()
+        setup_fts_index_impl(self.conn)
+
+    def refresh_fts(self) -> None:
+        """
+        Rebuild both BM25 indexes after writes.
+        DuckDB FTS has no incremental update — full rebuild is required.
+        Called automatically at the end of save_episode / save_knowledge.
+        """
+        logger.info("Refreshing FTS indexes after write...")
+        self._ensure_connected()
+        refresh_fts_indexes_impl(self.conn)
+
+    def search_knowledge_fts(
+        self,
+        *,
+        query: str,
+        user_id: str,
+        top_k: int = 10,
+    ) -> list[dict[str, Any]]:
+        """
+        BM25 full-text search over L2 semantic_knowledge.
+        Index is kept fresh by setup_fts (connect) + refresh_fts (after writes).
+        Returns BM25-ranked results with bm25_score.
+        """
+        self._ensure_connected()
+        return fts_search_knowledge_impl(
+            self.conn,
+            query=query,
+            user_id=user_id,
+            top_k=top_k,
+        )
+
+    def search_context_fts(
+        self,
+        *,
+        query: str,
+        session_id: str,
+        user_id: str,
+        top_k: int = 10,
+    ) -> list[dict[str, Any]]:
+        """
+        BM25 full-text search over L1 context_stream.
+        Index is kept fresh by setup_fts (connect) + refresh_fts (after writes).
+        """
+        self._ensure_connected()
+        return fts_search_context_impl(
+            self.conn,
+            query=query,
+            session_id=session_id,
+            user_id=user_id,
+            top_k=top_k,
+            now=self._now_utc(),
         )
 
     def close(self):
