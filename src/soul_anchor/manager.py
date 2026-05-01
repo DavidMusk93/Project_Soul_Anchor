@@ -1,14 +1,12 @@
 from __future__ import annotations
 
+import contextlib
 import datetime
 import logging
 import os
 from typing import Any
 
 import duckdb
-
-
-logger = logging.getLogger(__name__)
 
 from soul_anchor.db import init_schema
 from soul_anchor.db.variant import variant_sql_literal
@@ -21,11 +19,15 @@ from soul_anchor.retrieval import (
     search_recent_context_advanced as search_recent_context_advanced_impl,
 )
 from soul_anchor.retrieval.fts import (
+    FtsTable,
     fts_search_knowledge as fts_search_knowledge_impl,
     fts_search_context as fts_search_context_impl,
     refresh_fts_indexes as refresh_fts_indexes_impl,
     setup_fts_index as setup_fts_index_impl,
 )
+
+
+logger = logging.getLogger(__name__)
 
 class MemoryManager:
     """
@@ -36,6 +38,11 @@ class MemoryManager:
     def __init__(self, db_path="aime_evolution.duckdb"):
         self.db_path = db_path
         self.conn = None
+        # Deferred FTS refresh state. When depth > 0, writes only mark which
+        # tables became dirty; the actual rebuild happens when the outermost
+        # defer_fts_refresh() block exits.
+        self._fts_defer_depth: int = 0
+        self._fts_dirty_tables: set[FtsTable] = set()
 
     def connect(self):
         """建立连接、初始化 Schema、构建 FTS 索引"""
@@ -130,7 +137,7 @@ class MemoryManager:
             ],
         ).fetchone()
 
-        self.refresh_fts()
+        self.refresh_fts(tables=("context_stream",))
         return int(row[0])
 
     def search_recent_context(
@@ -233,13 +240,17 @@ class MemoryManager:
             ],
         ).fetchone()
 
-        self.refresh_fts()
+        self.refresh_fts(tables=("semantic_knowledge",))
         return int(row[0])
 
     def recall_memory(self, *, query: str, user_id: str, top_k: int = 10) -> list[dict[str, Any]]:
         """
-        Recall L2 knowledge by lightweight ranking (Phase 1).
-        Uses keyword matching; in Phase 2 this should be FTS/hybrid retrieval.
+        Recall L2 knowledge by lightweight ranking (Phase 1 compatibility).
+
+        Keyword-only selection: LIMIT is applied on kw_score. A vector_score
+        is attached to each returned row for observability but does NOT
+        participate in row selection. For true hybrid retrieval use
+        `search_knowledge(..., use_embedding=True)`.
         """
         self._ensure_connected()
         return recall_memory_impl(
@@ -385,28 +396,68 @@ class MemoryManager:
     #
     # Index lifecycle:
     #   - Built once at connection time (setup_fts called from connect())
-    #   - Refreshed after every write (save_episode / save_knowledge)
+    #   - Refreshed per-table after each write (table scope = context_stream
+    #     for save_episode, semantic_knowledge for save_knowledge)
     #   - Search methods never rebuild — zero read-path overhead
+    #   - Batch writes can wrap calls in `defer_fts_refresh()` to rebuild
+    #     dirty tables once at the end of the block
     # ------------------------------------------------------------------
 
     def setup_fts(self) -> None:
         """
-        Build BM25 indexes on semantic_knowledge and context_stream.
-        Called once at connection time. Safe to call multiple times.
+        Load the FTS extension and build BM25 indexes on semantic_knowledge
+        and context_stream. Called once at connection time. Safe to call
+        multiple times. No-op in offline environments where the FTS
+        extension cannot be installed.
         """
         logger.info("Building FTS indexes at connection time...")
         self._ensure_connected()
         setup_fts_index_impl(self.conn)
 
-    def refresh_fts(self) -> None:
+    def refresh_fts(
+        self,
+        *,
+        tables: tuple[FtsTable, ...] = ("semantic_knowledge", "context_stream"),
+    ) -> None:
         """
-        Rebuild both BM25 indexes after writes.
-        DuckDB FTS has no incremental update — full rebuild is required.
-        Called automatically at the end of save_episode / save_knowledge.
+        Rebuild BM25 indexes for the given tables. Only the affected tables
+        should be passed after a write. DuckDB FTS has no incremental
+        update — full rebuild of the listed tables is required.
+
+        When inside a `defer_fts_refresh()` block the rebuild is skipped
+        and the listed tables are marked dirty; the outermost block exit
+        rebuilds all dirty tables once.
         """
-        logger.info("Refreshing FTS indexes after write...")
         self._ensure_connected()
-        refresh_fts_indexes_impl(self.conn)
+        if self._fts_defer_depth > 0:
+            self._fts_dirty_tables.update(tables)
+            return
+        refresh_fts_indexes_impl(self.conn, tables=tables)
+
+    @contextlib.contextmanager
+    def defer_fts_refresh(self):
+        """
+        Coalesce multiple FTS rebuilds during a batch write.
+
+        Inside the block, writes mark the tables they touch as dirty instead
+        of rebuilding immediately. On exit of the OUTERMOST block, every
+        dirty table is rebuilt once. Nested usage is supported.
+
+        Example:
+            with manager.defer_fts_refresh():
+                for item in batch:
+                    manager.save_knowledge(item)
+            # FTS rebuilt once here
+        """
+        self._fts_defer_depth += 1
+        try:
+            yield
+        finally:
+            self._fts_defer_depth -= 1
+            if self._fts_defer_depth == 0 and self._fts_dirty_tables:
+                dirty = tuple(sorted(self._fts_dirty_tables))
+                self._fts_dirty_tables.clear()
+                refresh_fts_indexes_impl(self.conn, tables=dirty)
 
     def search_knowledge_fts(
         self,
