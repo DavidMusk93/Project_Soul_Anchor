@@ -23,7 +23,6 @@ class TestFTSLifecycle(unittest.TestCase):
     def setUp(self):
         self.manager = MemoryManager(db_path=":memory:")
         self.manager.connect()
-        self.manager.conn.execute("USE soul_anchor_db")
 
     def tearDown(self):
         self.manager.close()
